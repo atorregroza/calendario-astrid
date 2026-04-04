@@ -6,6 +6,7 @@
 <title>Calendario Astrid</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Caveat:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
   :root {
     --cream: #FBF5E9;
@@ -651,6 +652,55 @@
     .color-swatch { width: 24px; height: 24px; }
   }
 
+  /* Login screen */
+  .login-overlay {
+    position: fixed; inset: 0; z-index: 10000;
+    background: var(--cream);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 20px;
+  }
+  .login-overlay.hidden { display: none; }
+  .login-box {
+    background: #fff; border-radius: 16px; padding: 32px;
+    box-shadow: 0 8px 30px var(--shadow-md);
+    max-width: 360px; width: 90%; text-align: center;
+  }
+  .login-box h2 { font-family: 'Caveat', cursive; color: var(--accent); font-size: 2rem; margin-bottom: 4px; }
+  .login-box p { color: var(--ink-light); font-size: 0.85rem; margin-bottom: 20px; }
+  .login-box input[type="email"] {
+    width: 100%; padding: 10px 14px; border: 2px solid var(--cream-dark);
+    border-radius: 10px; font-family: 'Nunito', sans-serif; font-size: 0.9rem;
+    outline: none; margin-bottom: 12px;
+  }
+  .login-box input[type="email"]:focus { border-color: var(--accent); }
+  .login-box .login-btn {
+    width: 100%; padding: 10px; background: var(--accent); color: #fff;
+    border: none; border-radius: 10px; font-family: 'Nunito', sans-serif;
+    font-size: 0.9rem; font-weight: 700; cursor: pointer;
+  }
+  .login-box .login-btn:hover { opacity: 0.9; }
+  .login-box .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .login-msg { font-size: 0.8rem; margin-top: 12px; color: var(--ink-light); min-height: 20px; }
+  .login-msg.error { color: var(--status-cancelled); }
+  .login-msg.success { color: var(--status-done); }
+  .login-skip { background: none; border: none; color: var(--ink-faint); font-size: 0.78rem;
+    cursor: pointer; margin-top: 8px; font-family: 'Nunito', sans-serif; text-decoration: underline; }
+
+  /* Sync indicator */
+  .sync-indicator {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.72rem; color: var(--ink-faint); margin-left: 8px;
+    vertical-align: middle;
+  }
+  .sync-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--tag-sage); display: inline-block;
+  }
+  .sync-dot.saving { background: var(--tag-gold); animation: pulse 0.8s infinite; }
+  .sync-dot.offline { background: var(--ink-faint); }
+  .sync-dot.error { background: var(--status-cancelled); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
   /* Animations */
   @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
   .day-cell:not(.empty) { animation: fadeInUp 0.25s ease both; }
@@ -668,9 +718,22 @@
 </style>
 </head>
 <body>
+
+<!-- Login overlay -->
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-box">
+    <h2>Calendario Astrid</h2>
+    <p>Inicia sesion para sincronizar tus datos entre dispositivos</p>
+    <input type="email" id="loginEmail" placeholder="Tu correo electronico..." autocomplete="email">
+    <button class="login-btn" id="loginBtn">Enviar enlace magico</button>
+    <div class="login-msg" id="loginMsg"></div>
+    <button class="login-skip" id="loginSkip">Usar sin cuenta (solo este dispositivo)</button>
+  </div>
+</div>
+
 <div class="app">
   <header class="header">
-    <h1>Calendario Astrid</h1>
+    <h1>Calendario Astrid <span class="sync-indicator" id="syncIndicator" style="display:none"><span class="sync-dot" id="syncDot"></span> <span id="syncText">Sincronizado</span></span></h1>
     <div class="subtitle">Mi agenda personal</div>
   </header>
 
@@ -690,6 +753,7 @@
     <button class="tb-btn" id="exportBtn"><span class="tb-icon">&#128190;</span> Guardar copia</button>
     <button class="tb-btn" id="importBtn"><span class="tb-icon">&#128194;</span> Restaurar</button>
     <button class="tb-btn" id="fueraCiudadBtn"><span class="tb-icon">&#127758;</span> Fuera de ciudad</button>
+    <button class="tb-btn" id="logoutBtn" style="display:none"><span class="tb-icon">&#128274;</span> Cerrar sesion</button>
     <input type="file" id="importInput" accept=".json">
   </div>
 
@@ -786,6 +850,193 @@
 (function() {
   'use strict';
 
+  // --- Supabase setup ---
+  const SUPABASE_URL = 'https://brlgvyweuoyjdgjovkqf.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_XCsqBDLW03U_AhiTwyuf5g_jS7YUPHz';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  let currentUser = null;
+  let syncDebounceTimer = null;
+
+  function setSyncStatus(status) {
+    const indicator = document.getElementById('syncIndicator');
+    const dot = document.getElementById('syncDot');
+    const text = document.getElementById('syncText');
+    if (!currentUser) { indicator.style.display = 'none'; return; }
+    indicator.style.display = 'inline-flex';
+    dot.className = 'sync-dot';
+    if (status === 'saving') { dot.classList.add('saving'); text.textContent = 'Guardando...'; }
+    else if (status === 'offline') { dot.classList.add('offline'); text.textContent = 'Sin conexion'; }
+    else if (status === 'error') { dot.classList.add('error'); text.textContent = 'Error'; }
+    else { text.textContent = 'Sincronizado'; }
+  }
+
+  async function syncToCloud() {
+    if (!currentUser) return;
+    setSyncStatus('saving');
+    try {
+      const { error } = await supabase.from('calendar_data').upsert({
+        user_id: currentUser.id,
+        data: data,
+        birthdays: birthdays,
+        fuera_ciudad: fueraCiudad,
+        updated_at: new Date().toISOString()
+      });
+      if (error) throw error;
+      setSyncStatus('synced');
+    } catch (e) {
+      console.error('Sync error:', e);
+      setSyncStatus('error');
+    }
+  }
+
+  function debouncedSync() {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(syncToCloud, 500);
+  }
+
+  async function loadFromCloud() {
+    if (!currentUser) return false;
+    try {
+      const { data: row, error } = await supabase.from('calendar_data')
+        .select('*').eq('user_id', currentUser.id).single();
+      if (error && error.code === 'PGRST116') return false; // no row yet
+      if (error) throw error;
+      if (row) {
+        data = row.data || {};
+        birthdays = row.birthdays || [];
+        fueraCiudad = row.fuera_ciudad || [];
+        // Also cache locally
+        localStorage.setItem('calendarioAstrid', JSON.stringify(data));
+        localStorage.setItem('calendarioAstrid_bdays', JSON.stringify(birthdays));
+        localStorage.setItem('calendarioAstrid_fuera', JSON.stringify(fueraCiudad));
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.error('Load from cloud error:', e);
+      return false;
+    }
+  }
+
+  async function migrateLocalToCloud() {
+    if (!currentUser) return;
+    // Check if cloud has data already
+    const { data: row } = await supabase.from('calendar_data')
+      .select('user_id').eq('user_id', currentUser.id).single();
+    if (row) return; // cloud already has data, don't overwrite
+    // Upload local data to cloud
+    const localData = loadDataLocal();
+    const localBdays = loadBirthdaysLocal();
+    const localFuera = loadFueraLocal();
+    const hasLocal = Object.keys(localData).length > 0 || localBdays.length > 0 || localFuera.length > 0;
+    if (hasLocal) {
+      data = localData;
+      birthdays = localBdays;
+      fueraCiudad = localFuera;
+      await syncToCloud();
+    }
+  }
+
+  // --- Auth UI ---
+  async function initAuth() {
+    const overlay = document.getElementById('loginOverlay');
+    const emailInput = document.getElementById('loginEmail');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginMsg = document.getElementById('loginMsg');
+    const skipBtn = document.getElementById('loginSkip');
+
+    // Check if there's a session
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      currentUser = session.user;
+      overlay.classList.add('hidden');
+      await startApp();
+      return;
+    }
+
+    // Check for magic link token in URL hash
+    if (window.location.hash && window.location.hash.includes('access_token')) {
+      const { data: { session: newSession }, error } = await supabase.auth.getSession();
+      if (newSession) {
+        currentUser = newSession.user;
+        overlay.classList.add('hidden');
+        window.history.replaceState(null, '', window.location.pathname);
+        await startApp();
+        return;
+      }
+    }
+
+    // Show login screen
+    loginBtn.onclick = async () => {
+      const email = emailInput.value.trim();
+      if (!email || !email.includes('@')) {
+        loginMsg.className = 'login-msg error';
+        loginMsg.textContent = 'Escribe un correo valido';
+        return;
+      }
+      loginBtn.disabled = true;
+      loginMsg.className = 'login-msg';
+      loginMsg.textContent = 'Enviando enlace...';
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: window.location.origin + window.location.pathname }
+      });
+      if (error) {
+        loginMsg.className = 'login-msg error';
+        loginMsg.textContent = 'Error: ' + error.message;
+        loginBtn.disabled = false;
+      } else {
+        loginMsg.className = 'login-msg success';
+        loginMsg.textContent = 'Revisa tu correo y haz clic en el enlace para entrar';
+      }
+    };
+
+    emailInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginBtn.click(); });
+
+    skipBtn.onclick = () => {
+      overlay.classList.add('hidden');
+      startAppOffline();
+    };
+
+    // Listen for auth state changes (magic link callback)
+    supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        currentUser = session.user;
+        overlay.classList.add('hidden');
+        window.history.replaceState(null, '', window.location.pathname);
+        await startApp();
+      }
+    });
+  }
+
+  async function startApp() {
+    document.getElementById('logoutBtn').style.display = '';
+    const cloudLoaded = await loadFromCloud();
+    if (!cloudLoaded) {
+      await migrateLocalToCloud();
+    }
+    setSyncStatus('synced');
+    renderFilterBar();
+    renderView();
+  }
+
+  function startAppOffline() {
+    data = loadDataLocal();
+    birthdays = loadBirthdaysLocal();
+    fueraCiudad = loadFueraLocal();
+    renderFilterBar();
+    renderView();
+  }
+
+  // Logout
+  document.getElementById('logoutBtn').onclick = async () => {
+    await supabase.auth.signOut();
+    currentUser = null;
+    document.getElementById('logoutBtn').style.display = 'none';
+    setSyncStatus('offline');
+    document.getElementById('loginOverlay').classList.remove('hidden');
+  };
+
   const HOLIDAYS = {
     '2026-01-01': 'Año Nuevo', '2026-01-12': 'Día de los Reyes Magos',
     '2026-03-23': 'Día de San José', '2026-04-02': 'Jueves Santo',
@@ -819,12 +1070,12 @@
   let currentWeekStart = null; // Date object for week view
   let activeFilter = 'all';
   let dragSourceKey = null;
-  let data = loadData();
-  let birthdays = loadBirthdays();
-  let fueraCiudad = loadFuera(); // [{desde:'2026-05-01', hasta:'2026-05-05', lugar:'SMR'}, ...]
+  let data = {};
+  let birthdays = [];
+  let fueraCiudad = [];
 
-  function loadFuera() { try { return JSON.parse(localStorage.getItem('calendarioAstrid_fuera')||'[]'); } catch { return []; } }
-  function saveFuera() { localStorage.setItem('calendarioAstrid_fuera', JSON.stringify(fueraCiudad)); }
+  function loadFueraLocal() { try { return JSON.parse(localStorage.getItem('calendarioAstrid_fuera')||'[]'); } catch { return []; } }
+  function saveFuera() { localStorage.setItem('calendarioAstrid_fuera', JSON.stringify(fueraCiudad)); debouncedSync(); }
   function getFuera(dateStr) {
     for (const f of fueraCiudad) {
       if (dateStr >= f.desde && dateStr <= f.hasta) return f.lugar;
@@ -833,10 +1084,10 @@
   }
 
   function dateKey(y,m,d) { return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
-  function loadData() { try { return JSON.parse(localStorage.getItem('calendarioAstrid')||'{}'); } catch { return {}; } }
-  function saveData() { localStorage.setItem('calendarioAstrid', JSON.stringify(data)); }
-  function loadBirthdays() { try { return JSON.parse(localStorage.getItem('calendarioAstrid_bdays')||'[]'); } catch { return []; } }
-  function saveBirthdays() { localStorage.setItem('calendarioAstrid_bdays', JSON.stringify(birthdays)); }
+  function loadDataLocal() { try { return JSON.parse(localStorage.getItem('calendarioAstrid')||'{}'); } catch { return {}; } }
+  function saveData() { localStorage.setItem('calendarioAstrid', JSON.stringify(data)); debouncedSync(); }
+  function loadBirthdaysLocal() { try { return JSON.parse(localStorage.getItem('calendarioAstrid_bdays')||'[]'); } catch { return []; } }
+  function saveBirthdays() { localStorage.setItem('calendarioAstrid_bdays', JSON.stringify(birthdays)); debouncedSync(); }
   function getDayData(k) {
     const d = data[k];
     if (!d) return {color:'',activities:[],note:'',status:'none',category:'none'};
@@ -1504,8 +1755,7 @@
   // Init
   const now=new Date();
   if(now.getFullYear()>=2026 && now.getMonth()>=3){currentYear=now.getFullYear();currentMonth=now.getMonth();}
-  renderFilterBar();
-  renderView();
+  initAuth();
 })();
 </script>
 </body>
