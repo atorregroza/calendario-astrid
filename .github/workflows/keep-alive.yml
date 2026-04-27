@@ -1,0 +1,21 @@
+name: Keep Supabase alive
+
+on:
+  schedule:
+    - cron: '0 12 */5 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST endpoint
+        run: |
+          KEY="sb_publishable_XCsqBDLW03U_AhiTwyuf5g_jS7YUPHz"
+          URL="https://brlgvyweuoyjdgjovkqf.supabase.co/rest/v1/"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "apikey: $KEY" \
+            -H "Authorization: Bearer $KEY" \
+            "$URL")
+          echo "HTTP $CODE"
+          [ "$CODE" = "200" ] || exit 1
