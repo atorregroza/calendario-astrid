@@ -874,18 +874,22 @@
     if (!currentUser) return;
     setSyncStatus('saving');
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Sesión expirada — vuelve a iniciar sesión');
       const { error } = await supabase.from('calendar_data').upsert({
         user_id: currentUser.id,
         data: data,
         birthdays: birthdays,
         fuera_ciudad: fueraCiudad,
         updated_at: new Date().toISOString()
-      });
+      }, { onConflict: 'user_id' });
       if (error) throw error;
       setSyncStatus('synced');
     } catch (e) {
       console.error('Sync error:', e);
       setSyncStatus('error');
+      const msg = (e && e.message) ? e.message : 'Error desconocido';
+      showToast('No guardó en la nube: ' + msg, '&#9888;');
     }
   }
 
