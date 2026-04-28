@@ -753,6 +753,7 @@
     <button class="tb-btn" id="exportBtn"><span class="tb-icon">&#128190;</span> Guardar copia</button>
     <button class="tb-btn" id="importBtn"><span class="tb-icon">&#128194;</span> Restaurar</button>
     <button class="tb-btn" id="fueraCiudadBtn"><span class="tb-icon">&#127758;</span> Fuera de ciudad</button>
+    <button class="tb-btn" id="googleBtn" style="display:none"><span class="tb-icon">&#128197;</span> Google</button>
     <button class="tb-btn" id="logoutBtn" style="display:none"><span class="tb-icon">&#128274;</span> Cerrar sesion</button>
     <input type="file" id="importInput" accept=".json">
   </div>
@@ -840,6 +841,36 @@
         <button class="btn-add-bday" id="bdayAdd">Agregar</button>
       </div>
       <ul class="bday-list" id="bdayList"></ul>
+    </div>
+  </div>
+</div>
+
+<!-- Google Calendar Modal -->
+<div class="modal-overlay" id="googleOverlay">
+  <div class="bday-modal">
+    <div class="modal-header">
+      <h2>&#128197; Sincronizar con Google Calendar</h2>
+      <button class="close-btn" id="googleClose">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:12px;color:var(--ink-light);font-size:0.9rem">
+        Suscribe esta direccion en Google Calendar para ver tus eventos alli. Se actualiza automaticamente (Google refresca cada ~24 horas).
+      </p>
+      <div style="background:var(--cream);border:1px solid var(--cream-dark);border-radius:8px;padding:10px;margin-bottom:12px;word-break:break-all;font-family:monospace;font-size:0.78rem;color:var(--ink)" id="googleUrlBox">Generando direccion...</div>
+      <button class="btn-add-bday" id="googleCopyBtn" style="margin-bottom:14px">Copiar direccion</button>
+      <details style="font-size:0.85rem;color:var(--ink-light)">
+        <summary style="cursor:pointer;font-weight:700;color:var(--ink)">Como suscribir en Google Calendar</summary>
+        <ol style="margin-top:10px;padding-left:20px;line-height:1.6">
+          <li>Copia la direccion de arriba</li>
+          <li>Abre <a href="https://calendar.google.com" target="_blank" style="color:var(--accent)">calendar.google.com</a> en tu computadora</li>
+          <li>En el menu izquierdo, busca <b>"Otros calendarios"</b> y haz clic en el <b>+</b></li>
+          <li>Elige <b>"Desde URL"</b></li>
+          <li>Pega la direccion y haz clic en <b>"Anadir calendario"</b></li>
+        </ol>
+        <p style="margin-top:10px;font-size:0.8rem;color:var(--ink-faint)">
+          &#9888; No compartas esta direccion: cualquiera con el enlace puede ver tus eventos.
+        </p>
+      </details>
     </div>
   </div>
 </div>
@@ -1015,6 +1046,7 @@
 
   async function startApp() {
     document.getElementById('logoutBtn').style.display = '';
+    document.getElementById('googleBtn').style.display = '';
     const cloudLoaded = await loadFromCloud();
     if (!cloudLoaded) {
       await migrateLocalToCloud();
@@ -1032,11 +1064,56 @@
     renderView();
   }
 
+  // Google Calendar sync (read-only ics feed)
+  async function ensureIcsToken() {
+    if (!currentUser) return null;
+    const { data: row } = await supabase.from('calendar_data')
+      .select('ics_token').eq('user_id', currentUser.id).single();
+    if (row && row.ics_token) return row.ics_token;
+    const token = (crypto.randomUUID && crypto.randomUUID()) ||
+      ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c/4).toString(16));
+    const { error } = await supabase.from('calendar_data')
+      .update({ ics_token: token }).eq('user_id', currentUser.id);
+    if (error) { console.error('Token save error:', error); return null; }
+    return token;
+  }
+
+  document.getElementById('googleBtn').onclick = async () => {
+    const overlay = document.getElementById('googleOverlay');
+    const urlBox = document.getElementById('googleUrlBox');
+    overlay.classList.add('active');
+    urlBox.textContent = 'Generando direccion...';
+    await syncToCloud();
+    const token = await ensureIcsToken();
+    if (!token) { urlBox.textContent = 'Error generando direccion. Intenta de nuevo.'; return; }
+    const url = `${window.location.origin}/api/calendar?t=${token}`;
+    urlBox.textContent = url;
+  };
+
+  document.getElementById('googleClose').onclick = () => {
+    document.getElementById('googleOverlay').classList.remove('active');
+  };
+  document.getElementById('googleOverlay').onclick = (e) => {
+    if (e.target.id === 'googleOverlay') e.currentTarget.classList.remove('active');
+  };
+  document.getElementById('googleCopyBtn').onclick = async () => {
+    const url = document.getElementById('googleUrlBox').textContent;
+    if (!url || !url.startsWith('http')) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Direccion copiada', '&#128203;');
+    } catch {
+      showToast('No se pudo copiar', '&#9888;');
+    }
+  };
+
   // Logout
   document.getElementById('logoutBtn').onclick = async () => {
     await supabase.auth.signOut();
     currentUser = null;
     document.getElementById('logoutBtn').style.display = 'none';
+    document.getElementById('googleBtn').style.display = 'none';
     setSyncStatus('offline');
     document.getElementById('loginOverlay').classList.remove('hidden');
   };
